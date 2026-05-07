@@ -97,6 +97,7 @@ document.addEventListener("DOMContentLoaded", () => {
         progressEl: null,
         pctEl: null,
         state: "idle",
+        _resetTimer: null,
         init() {
             this.btn = document.getElementById("upload-button");
             this.progressEl = this.btn ? this.btn.querySelector(".ring-progress") : null;
@@ -109,7 +110,12 @@ document.addEventListener("DOMContentLoaded", () => {
             if (state === "success")   this.btn.classList.add("upload-success");
             if (state === "error")     this.btn.classList.add("upload-error");
         },
+        isBusy() {
+            return this.state !== "idle";
+        },
         start() {
+            clearTimeout(this._resetTimer);
+            this._resetTimer = null;
             this.init();
             this.state = "uploading";
             if (this.pctEl) this.pctEl.textContent = "0%";
@@ -129,14 +135,16 @@ document.addEventListener("DOMContentLoaded", () => {
             this.state = "success";
             if (this.progressEl) this.progressEl.style.strokeDashoffset = "0";
             this._setStateClass("success");
-            setTimeout(() => this.reset(), 2000);
+            this._resetTimer = setTimeout(() => this.reset(), 2000);
         },
         fail() {
             this.state = "error";
             this._setStateClass("error");
-            setTimeout(() => this.reset(), 2000);
+            this._resetTimer = setTimeout(() => this.reset(), 2000);
         },
         reset() {
+            clearTimeout(this._resetTimer);
+            this._resetTimer = null;
             this.state = "idle";
             if (this.progressEl) {
                 this.progressEl.style.strokeDashoffset = String(UPLOAD_RING_CIRCUMFERENCE);
@@ -299,7 +307,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         uploadButton.addEventListener("click", () => {
             if (uploadButton.classList.contains("disabled")) return;
-            if (UploadRing.state === "uploading") return;
+            if (UploadRing.isBusy()) return;
             fileInput.click();
         });
 
@@ -364,6 +372,8 @@ document.addEventListener("DOMContentLoaded", () => {
         xhr.setRequestHeader("Authorization", getAuthHeader());
 
         xhr.upload.addEventListener("progress", (e) => {
+            // If lengthComputable is false (rare with local POST), ring stays at 0%.
+            // Indeterminate animation is out of scope.
             if (e.lengthComputable) {
                 UploadRing.update((e.loaded / e.total) * 100);
             }
