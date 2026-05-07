@@ -47,11 +47,20 @@ async def start_server(user=Depends(get_current_user)):
     """
     Start the DCS server process.
     """
+    if DCSControl.find_process():
+        raise HTTPException(
+            status_code=409,
+            detail="A DCS server is already running with this save folder. Stop it first.",
+        )
+
     if DCSControl.start_process():
         logger.info(f"'{user}' started DCS server")
         return {"message": "DCS server started successfully"}
 
-    raise HTTPException(status_code=500, detail="Failed to start DCS server")
+    raise HTTPException(
+        status_code=500,
+        detail="DCS server did not appear within 10 seconds after spawn. Check the dedicated server logs.",
+    )
 
 @router_api_v1.post("/server/stop", response_model=dict)
 async def stop_server(user=Depends(get_current_user)):
