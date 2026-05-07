@@ -35,8 +35,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // StatusLabel: derives Server Status text + color class.
     // States: running | stopped | starting | stopping | failed
-    // Transitional and failed states are extended in Task 3; this version
-    // covers only running/stopped, driven by /api/v1/status responses.
+    // Transitional/failed states wired to power button in Task 3.
     const StatusLabel = {
         el: null,
         valueEl: null,
@@ -70,6 +69,19 @@ document.addEventListener("DOMContentLoaded", () => {
             );
             this.el.classList.add(entry.cls);
             this.valueEl.textContent = entry.text;
+
+            if (state === "failed") {
+                // Auto-recover after 5s by re-fetching real status.
+                // If the fetch itself errors (server unreachable, 5xx),
+                // fetchAndUpdateStatus's own .catch swallows it: the label
+                // stays in `failed` and no further timer is scheduled here.
+                this.recoveryTimer = setTimeout(() => {
+                    this.recoveryTimer = null;
+                    if (typeof fetchAndUpdateStatus === "function") {
+                        fetchAndUpdateStatus();
+                    }
+                }, 5000);
+            }
         },
         cancelRecovery() {
             clearTimeout(this.recoveryTimer);
@@ -199,16 +211,23 @@ document.addEventListener("DOMContentLoaded", () => {
 
         powerButton.addEventListener("click", () => {
             const isOn = powerButton.classList.contains("on");
-            const action = isOn ? "/api/v1/server/stop" : "/api/v1/server/start";
+            const action = isOn ? "stop" : "start";
+            const url = isOn ? "/api/v1/server/stop" : "/api/v1/server/start";
+
+            StatusLabel.cancelRecovery();
+            StatusLabel.setState(isOn ? "stopping" : "starting");
 
             toggleRefreshSpinner(true);
-            fetch(action, {
+            fetch(url, {
                 method: "POST",
                 headers: { Authorization: getAuthHeader() },
             })
                 .then(handleFetchError)
                 .then(fetchAndUpdateStatus)
-                .catch((error) => console.error("Error toggling server power:", error))
+                .catch((error) => {
+                    console.error("Error toggling server power:", error);
+                    StatusLabel.setState("failed", { action });
+                })
                 .finally(() => toggleRefreshSpinner(false));
         });
 
@@ -249,7 +268,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 .finally(() => toggleRefreshSpinner(false));
         });
 
-        refreshButton.addEventListener("click", fetchAndUpdateStatus);
+        refreshButton.addEventListener("click", () => {
+            StatusLabel.cancelRecovery();
+            fetchAndUpdateStatus();
+        });
     };
 
     // Handle file upload
