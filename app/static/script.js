@@ -315,6 +315,8 @@ document.addEventListener("DOMContentLoaded", () => {
             const file = fileInput.files[0];
             if (file) {
                 handleFileUpload(file);
+                // Reset so re-selecting the same filename fires another change event.
+                fileInput.value = "";
             }
         });
 
