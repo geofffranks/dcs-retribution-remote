@@ -89,6 +89,72 @@ document.addEventListener("DOMContentLoaded", () => {
         },
     };
 
+    // UploadRing: SVG progress ring overlay on #upload-button.
+    // States: idle | uploading | success | error
+    const UPLOAD_RING_CIRCUMFERENCE = 276.46; // 2 * pi * 44
+    const UploadRing = {
+        btn: null,
+        progressEl: null,
+        pctEl: null,
+        state: "idle",
+        init() {
+            this.btn = document.getElementById("upload-button");
+            this.progressEl = this.btn ? this.btn.querySelector(".ring-progress") : null;
+            this.pctEl      = this.btn ? this.btn.querySelector(".upload-pct")    : null;
+        },
+        _setStateClass(state) {
+            if (!this.btn) return;
+            this.btn.classList.remove("uploading", "upload-success", "upload-error");
+            if (state === "uploading") this.btn.classList.add("uploading");
+            if (state === "success")   this.btn.classList.add("upload-success");
+            if (state === "error")     this.btn.classList.add("upload-error");
+        },
+        start() {
+            this.init();
+            this.state = "uploading";
+            if (this.pctEl) this.pctEl.textContent = "0%";
+            if (this.progressEl) {
+                this.progressEl.style.strokeDashoffset = String(UPLOAD_RING_CIRCUMFERENCE);
+            }
+            this._setStateClass("uploading");
+        },
+        update(pct) {
+            if (this.state !== "uploading") return;
+            const clamped = Math.max(0, Math.min(100, pct));
+            const offset = UPLOAD_RING_CIRCUMFERENCE * (1 - clamped / 100);
+            if (this.progressEl) this.progressEl.style.strokeDashoffset = String(offset);
+            if (this.pctEl) this.pctEl.textContent = Math.round(clamped) + "%";
+        },
+        succeed() {
+            this.state = "success";
+            if (this.progressEl) this.progressEl.style.strokeDashoffset = "0";
+            this._setStateClass("success");
+            setTimeout(() => this.reset(), 2000);
+        },
+        fail() {
+            this.state = "error";
+            this._setStateClass("error");
+            setTimeout(() => this.reset(), 2000);
+        },
+        reset() {
+            this.state = "idle";
+            if (this.progressEl) {
+                this.progressEl.style.strokeDashoffset = String(UPLOAD_RING_CIRCUMFERENCE);
+            }
+            this._setStateClass("idle");
+        },
+    };
+
+    // parseErrorDetail: extract FastAPI HTTPException(detail=...) text from xhr.responseText
+    const parseErrorDetail = (xhr) => {
+        try {
+            const obj = JSON.parse(xhr.responseText);
+            return obj && obj.detail ? String(obj.detail) : null;
+        } catch (_) {
+            return null;
+        }
+    };
+
     // Helper function to get the Authorization header
     const getAuthHeader = () => {
         const auth = localStorage.getItem("auth");
@@ -232,9 +298,9 @@ document.addEventListener("DOMContentLoaded", () => {
         });
 
         uploadButton.addEventListener("click", () => {
-            if (!uploadButton.classList.contains("disabled")) {
-                fileInput.click();
-            }
+            if (uploadButton.classList.contains("disabled")) return;
+            if (UploadRing.state === "uploading") return;
+            fileInput.click();
         });
 
         fileInput.addEventListener("change", () => {
@@ -293,19 +359,49 @@ document.addEventListener("DOMContentLoaded", () => {
         const formData = new FormData();
         formData.append("file", file);
 
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", "/api/v1/files/upload_miz");
+        xhr.setRequestHeader("Authorization", getAuthHeader());
+
+        xhr.upload.addEventListener("progress", (e) => {
+            if (e.lengthComputable) {
+                UploadRing.update((e.loaded / e.total) * 100);
+            }
+        });
+
+        xhr.addEventListener("load", () => {
+            toggleRefreshSpinner(false);
+            if (xhr.status === 401) {
+                UploadRing.reset();
+                localStorage.removeItem("auth");
+                renderLoginUI();
+                return;
+            }
+            if (xhr.status >= 200 && xhr.status < 300) {
+                UploadRing.succeed();
+                Toast.show(`Uploaded ${file.name}`, "success");
+                fetchAndUpdateStatus();
+            } else {
+                UploadRing.fail();
+                Toast.show(parseErrorDetail(xhr) || `Upload failed: HTTP ${xhr.status}`, "error");
+            }
+        });
+
+        xhr.addEventListener("error", () => {
+            toggleRefreshSpinner(false);
+            UploadRing.fail();
+            Toast.show("Network error during upload", "error");
+        });
+
+        xhr.addEventListener("timeout", () => {
+            toggleRefreshSpinner(false);
+            UploadRing.fail();
+            Toast.show("Upload timed out", "error");
+        });
+
+        UploadRing.start();
         toggleRefreshSpinner(true);
-        fetch("/api/v1/files/upload_miz", {
-            method: "POST",
-            body: formData,
-            headers: { Authorization: getAuthHeader() },
-        })
-            .then(handleFetchError)
-            .then(fetchAndUpdateStatus)
-            .catch((error) => {
-                console.error("Error uploading file:", error);
-                alert("An error occurred while uploading the file.");
-            })
-            .finally(() => toggleRefreshSpinner(false));
+        xhr.send(formData);
     };
 
     // Check authentication and render the appropriate UI

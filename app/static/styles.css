@@ -288,3 +288,82 @@ a:hover {
     50%  { opacity: 0.55; }
     100% { opacity: 1; }
 }
+
+/* ----------------------------- */
+/* Upload progress ring          */
+/* ----------------------------- */
+#upload-button { overflow: visible; }
+
+.upload-ring,
+.upload-pct,
+.upload-result-icon {
+    display: none;
+    position: absolute;
+    pointer-events: none;
+}
+
+.upload-ring {
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    transform: rotate(-90deg); /* start fill at 12 o'clock */
+}
+
+.ring-track {
+    fill: none;
+    stroke: rgba(255, 255, 255, 0.25);
+    stroke-width: 6;
+}
+
+.ring-progress {
+    fill: none;
+    stroke: #C9A227;            /* amber default during upload */
+    stroke-width: 6;
+    stroke-linecap: round;
+    stroke-dasharray: 276.46;   /* 2 * π * 44 */
+    stroke-dashoffset: 276.46;  /* hidden initially */
+    transition: stroke-dashoffset 0.15s linear, stroke 0.2s ease;
+}
+
+.upload-pct {
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #ffffff;
+    font-weight: 700;
+    font-size: 1.2rem;
+}
+
+.upload-result-icon {
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #ffffff;
+    font-size: 2.5rem;
+    line-height: 1;
+}
+
+/* Uploading state */
+#upload-button.uploading .upload-icon-default { display: none; }
+#upload-button.uploading .upload-ring,
+#upload-button.uploading .upload-pct          { display: block; }
+
+/* Success / error states */
+#upload-button.upload-success .upload-icon-default,
+#upload-button.upload-error   .upload-icon-default { display: none; }
+
+#upload-button.upload-success .upload-ring,
+#upload-button.upload-error   .upload-ring         { display: block; }
+
+#upload-button.upload-success .upload-result-icon,
+#upload-button.upload-error   .upload-result-icon  { display: block; }
+
+#upload-button.upload-success .ring-progress       {
+    stroke: #82A466;          /* green at completion */
+    stroke-dashoffset: 0;
+}
+#upload-button.upload-success .upload-result-icon::after { content: "\2713"; } /* ✓ */
+
+#upload-button.upload-error   .ring-progress       { stroke: #9E3232; } /* red */
+#upload-button.upload-error   .upload-result-icon::after { content: "\2715"; } /* ✕ */

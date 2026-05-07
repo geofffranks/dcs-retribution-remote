@@ -11,8 +11,14 @@
     </div>
     <main>
         <div class="button-container">
-            <button id="upload-button" class="action-button" data-tooltip="Upload .miz" type="file" accept=".miz">
-                <img src="/static/ui/upload.svg" alt="Upload Icon">
+            <button id="upload-button" class="action-button" data-tooltip="Upload .miz">
+                <img src="/static/ui/upload.svg" alt="Upload Icon" class="upload-icon-default">
+                <svg class="upload-ring" viewBox="0 0 100 100" aria-hidden="true">
+                    <circle class="ring-track"    cx="50" cy="50" r="44"/>
+                    <circle class="ring-progress" cx="50" cy="50" r="44"/>
+                </svg>
+                <span class="upload-pct" aria-hidden="true">0%</span>
+                <span class="upload-result-icon" aria-hidden="true"></span>
             </button>
             <input type="file" id="file-input" style="display: none;">
             <button id="power-button" class="action-button off" data-tooltip="Start Server">
