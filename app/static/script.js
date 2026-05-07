@@ -208,7 +208,7 @@ document.addEventListener("DOMContentLoaded", () => {
             return data;
         } catch (error) {
             console.error("Error fetching server status:", error);
-        } finally {``
+        } finally {
             toggleRefreshSpinner(false);
         }
     };
