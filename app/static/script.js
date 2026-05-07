@@ -33,6 +33,50 @@ document.addEventListener("DOMContentLoaded", () => {
         },
     };
 
+    // StatusLabel: derives Server Status text + color class.
+    // States: running | stopped | starting | stopping | failed
+    // Transitional and failed states are extended in Task 3; this version
+    // covers only running/stopped, driven by /api/v1/status responses.
+    const StatusLabel = {
+        el: null,
+        valueEl: null,
+        recoveryTimer: null,
+        init() {
+            this.el = document.getElementById("status-label");
+            this.valueEl = document.getElementById("status-value");
+        },
+        setState(state, opts) {
+            this.init();
+            if (!this.el || !this.valueEl) return;
+            opts = opts || {};
+            clearTimeout(this.recoveryTimer);
+            this.recoveryTimer = null;
+
+            const map = {
+                running:  { text: "Running",         cls: "status-running" },
+                stopped:  { text: "Stopped",         cls: "status-stopped" },
+                starting: { text: "Starting…",  cls: "status-transitioning" },
+                stopping: { text: "Stopping…",  cls: "status-transitioning" },
+                failed:   {
+                    text: opts.action === "stop" ? "Failed to stop" : "Failed to start",
+                    cls: "status-error",
+                },
+            };
+            const entry = map[state] || map.stopped;
+
+            this.el.classList.remove(
+                "status-running", "status-stopped",
+                "status-transitioning", "status-error"
+            );
+            this.el.classList.add(entry.cls);
+            this.valueEl.textContent = entry.text;
+        },
+        cancelRecovery() {
+            clearTimeout(this.recoveryTimer);
+            this.recoveryTimer = null;
+        },
+    };
+
     // Helper function to get the Authorization header
     const getAuthHeader = () => {
         const auth = localStorage.getItem("auth");
@@ -93,11 +137,13 @@ document.addEventListener("DOMContentLoaded", () => {
             powerButton.setAttribute("data-tooltip", "Stop Server");
             uploadButton.classList.add("disabled");
             uploadButton.setAttribute("disabled", "true");
+            StatusLabel.setState("running");
         } else {
             powerButton.classList.replace("on", "off");
             powerButton.setAttribute("data-tooltip", "Start Server");
             uploadButton.classList.remove("disabled");
             uploadButton.removeAttribute("disabled");
+            StatusLabel.setState("stopped");
         }
 
         uploadButton.setAttribute("data-tooltip", data.allowed_filenames.join(" "));

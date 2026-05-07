@@ -256,3 +256,35 @@ a:hover {
 
 .toast.success { background-color: #82A466; }
 .toast.error   { background-color: #9E3232; }
+
+/* ----------------------------- */
+/* Status Label                  */
+/* ----------------------------- */
+#status-label {
+    margin: 0 auto 16px;
+    padding: 8px 18px;
+    border-radius: 20px;
+    background-color: #9E3232;
+    color: #ffffff;
+    font-size: 1.05rem;
+    font-weight: 600;
+    box-shadow: 0 0 8px rgba(0, 0, 0, 0.5);
+    text-align: center;
+    min-width: 220px;
+    display: inline-block;
+    transition: background-color 0.3s ease;
+}
+
+#status-label.status-running       { background-color: #82A466; }
+#status-label.status-stopped       { background-color: #9E3232; }
+#status-label.status-error         { background-color: #9E3232; }
+#status-label.status-transitioning {
+    background-color: #C9A227; /* amber */
+    animation: status-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+    0%   { opacity: 1; }
+    50%  { opacity: 0.55; }
+    100% { opacity: 1; }
+}
