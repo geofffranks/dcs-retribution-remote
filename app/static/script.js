@@ -3,6 +3,36 @@ document.addEventListener("DOMContentLoaded", () => {
     let serverInfo = {};
     const appContainer = document.getElementById("app-container");
 
+    // Toast: single-slot, ARIA-live status announcer at top-center.
+    // Lazy-inits on every show() so the cached element is always current
+    // even after renderControlUI/renderLoginUI replace appContainer's children.
+    const Toast = {
+        el: null,
+        timer: null,
+        init() {
+            this.el = document.getElementById("toast");
+            if (this.el && !this.el.dataset.bound) {
+                this.el.addEventListener("click", () => this.hide());
+                this.el.dataset.bound = "1";
+            }
+        },
+        show(message, kind) {
+            this.init();
+            if (!this.el) return;
+            clearTimeout(this.timer);
+            this.el.textContent = message;
+            this.el.classList.remove("hidden", "success", "error");
+            this.el.classList.add(kind === "error" ? "error" : "success");
+            const dwellMs = kind === "error" ? 5000 : 2000;
+            this.timer = setTimeout(() => this.hide(), dwellMs);
+        },
+        hide() {
+            if (!this.el) return;
+            clearTimeout(this.timer);
+            this.el.classList.add("hidden");
+        },
+    };
+
     // Helper function to get the Authorization header
     const getAuthHeader = () => {
         const auth = localStorage.getItem("auth");
