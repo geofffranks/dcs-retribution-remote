@@ -33,20 +33,29 @@ document.addEventListener("DOMContentLoaded", () => {
         },
     };
 
-    // StatusLabel: derives Server Status text + color class.
+    // StatusLabel: server status state machine + DOM updater.
     // States: running | stopped | starting | stopping | failed
-    // Transitional/failed states wired to power button in Task 3.
+    // Owns: the #status-label pill, the #power-button color class, the
+    // #upload-button disabled state, the periodic status poll, and the
+    // failure-recovery timer. setState() is the single mutator; everything
+    // else (DOM + timers) is derived.
+    const STATUS_STABLE_POLL_MS = 15000;
+    const STATUS_TRANSITION_POLL_MS = 3000;
+    const STATUS_TRANSITION_TIMEOUT_MS = 120000;
+    const STATUS_FAILED_HOLD_MS = 15000;
     const StatusLabel = {
         el: null,
         valueEl: null,
+        state: "stopped",
         recoveryTimer: null,
+        pollTimer: null,
+        transitionStartedAt: 0,
         init() {
             this.el = document.getElementById("status-label");
             this.valueEl = document.getElementById("status-value");
         },
         setState(state, opts) {
             this.init();
-            if (!this.el || !this.valueEl) return;
             opts = opts || {};
             clearTimeout(this.recoveryTimer);
             this.recoveryTimer = null;
@@ -63,29 +72,123 @@ document.addEventListener("DOMContentLoaded", () => {
             };
             const entry = map[state] || map.stopped;
 
-            this.el.classList.remove(
-                "status-running", "status-stopped",
-                "status-transitioning", "status-error"
-            );
-            this.el.classList.add(entry.cls);
-            this.valueEl.textContent = entry.text;
+            if (this.el && this.valueEl) {
+                this.el.classList.remove(
+                    "status-running", "status-stopped",
+                    "status-transitioning", "status-error"
+                );
+                this.el.classList.add(entry.cls);
+                this.valueEl.textContent = entry.text;
+            }
+
+            this._updateButtons(state);
+
+            if (state === "starting" || state === "stopping") {
+                if (!this.transitionStartedAt) {
+                    this.transitionStartedAt = Date.now();
+                }
+            } else {
+                this.transitionStartedAt = 0;
+            }
+
+            this.state = state;
 
             if (state === "failed") {
-                // Auto-recover after 5s by re-fetching real status.
-                // If the fetch itself errors (server unreachable, 5xx),
-                // fetchAndUpdateStatus's own .catch swallows it: the label
-                // stays in `failed` and no further timer is scheduled here.
+                // Hold the failed message for STATUS_FAILED_HOLD_MS so the
+                // user has time to read the toast that accompanied it, then
+                // re-fetch real status. The next applyServerStatus call lifts
+                // the state out of "failed" automatically (the filter in
+                // applyServerStatus does NOT pin failed — only transitional).
                 this.recoveryTimer = setTimeout(() => {
                     this.recoveryTimer = null;
                     if (typeof fetchAndUpdateStatus === "function") {
                         fetchAndUpdateStatus();
                     }
-                }, 5000);
+                }, STATUS_FAILED_HOLD_MS);
             }
+
+            this._reschedulePoll();
+        },
+        _updateButtons(state) {
+            const power = document.getElementById("power-button");
+            if (power) {
+                power.classList.remove("on", "off", "transitioning");
+                if (state === "running") {
+                    power.classList.add("on");
+                    power.setAttribute("data-tooltip", "Stop Server");
+                } else if (state === "starting") {
+                    power.classList.add("transitioning");
+                    power.setAttribute("data-tooltip", "Starting…");
+                } else if (state === "stopping") {
+                    power.classList.add("transitioning");
+                    power.setAttribute("data-tooltip", "Stopping…");
+                } else {
+                    // stopped or failed
+                    power.classList.add("off");
+                    power.setAttribute("data-tooltip", "Start Server");
+                }
+            }
+            const upload = document.getElementById("upload-button");
+            if (upload) {
+                const lock = state === "running" || state === "starting" || state === "stopping";
+                if (lock) {
+                    upload.classList.add("disabled");
+                    upload.setAttribute("disabled", "true");
+                } else {
+                    upload.classList.remove("disabled");
+                    upload.removeAttribute("disabled");
+                }
+            }
+        },
+        _reschedulePoll() {
+            clearInterval(this.pollTimer);
+            this.pollTimer = null;
+            if (this.state === "starting" || this.state === "stopping") {
+                this.pollTimer = setInterval(() => {
+                    if (this.transitionStartedAt && Date.now() - this.transitionStartedAt > STATUS_TRANSITION_TIMEOUT_MS) {
+                        const action = this.state === "stopping" ? "stop" : "start";
+                        const verb = this.state === "stopping" ? "stop" : "start";
+                        Toast.show(`Server did not ${verb} within ${STATUS_TRANSITION_TIMEOUT_MS / 1000}s. Check server logs.`, "error");
+                        this.setState("failed", { action });
+                        return;
+                    }
+                    if (typeof fetchAndUpdateStatus === "function") {
+                        fetchAndUpdateStatus();
+                    }
+                }, STATUS_TRANSITION_POLL_MS);
+            } else if (this.state === "running" || this.state === "stopped") {
+                this.pollTimer = setInterval(() => {
+                    if (typeof fetchAndUpdateStatus === "function") {
+                        fetchAndUpdateStatus();
+                    }
+                }, STATUS_STABLE_POLL_MS);
+            }
+            // failed: no poll; recoveryTimer drives the single re-fetch.
+        },
+        // Apply a raw `/api/v1/status` response. Honors transitional pinning:
+        // while in starting/stopping, only flip out if the server reports the
+        // target state. failed and stable states accept the server's word.
+        applyServerStatus(rawStatus) {
+            if (this.state === "starting") {
+                if (rawStatus === "running") this.setState("running");
+                return;
+            }
+            if (this.state === "stopping") {
+                if (rawStatus === "stopped") this.setState("stopped");
+                return;
+            }
+            this.setState(rawStatus);
         },
         cancelRecovery() {
             clearTimeout(this.recoveryTimer);
             this.recoveryTimer = null;
+        },
+        cancelAllTimers() {
+            clearTimeout(this.recoveryTimer);
+            clearInterval(this.pollTimer);
+            this.recoveryTimer = null;
+            this.pollTimer = null;
+            this.transitionStartedAt = 0;
         },
     };
 
@@ -213,30 +316,21 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     };
 
-    // Update the UI with server status
+    // Update the UI with server status. Defers the power button + upload
+    // button class management to StatusLabel.applyServerStatus; only the
+    // "allowed filenames" tooltip on the upload button is set here, since
+    // it depends on data the StatusLabel doesn't see.
     const updateUIWithServerStatus = (data) => {
-        const powerButton = document.getElementById("power-button");
         const uploadButton = document.getElementById("upload-button");
-
-        if (data.status === "running") {
-            powerButton.classList.replace("off", "on");
-            powerButton.setAttribute("data-tooltip", "Stop Server");
-            uploadButton.classList.add("disabled");
-            uploadButton.setAttribute("disabled", "true");
-            StatusLabel.setState("running");
-        } else {
-            powerButton.classList.replace("on", "off");
-            powerButton.setAttribute("data-tooltip", "Start Server");
-            uploadButton.classList.remove("disabled");
-            uploadButton.removeAttribute("disabled");
-            StatusLabel.setState("stopped");
+        if (uploadButton) {
+            uploadButton.setAttribute("data-tooltip", data.allowed_filenames.join(" "));
         }
-
-        uploadButton.setAttribute("data-tooltip", data.allowed_filenames.join(" "));
+        StatusLabel.applyServerStatus(data.status);
     };
 
     // Render the login UI
     const renderLoginUI = () => {
+        StatusLabel.cancelAllTimers();
         fetch("/partials/login.html")
             .then((response) => response.text())
             .then((html) => {
@@ -265,6 +359,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Render the control UI
     const renderControlUI = () => {
+        StatusLabel.cancelAllTimers();
         fetch("/partials/control.html")
             .then((response) => response.text())
             .then((html) => {
@@ -284,6 +379,10 @@ document.addEventListener("DOMContentLoaded", () => {
         const refreshButton = document.getElementById("refresh-button");
 
         powerButton.addEventListener("click", () => {
+            // Block clicks while a transition is already in flight; the poll
+            // loop is driving the eventual settle.
+            if (powerButton.classList.contains("transitioning")) return;
+
             const isOn = powerButton.classList.contains("on");
             const action = isOn ? "stop" : "start";
             const url = isOn ? "/api/v1/server/stop" : "/api/v1/server/start";
@@ -296,11 +395,31 @@ document.addEventListener("DOMContentLoaded", () => {
                 method: "POST",
                 headers: { Authorization: getAuthHeader() },
             })
-                .then(handleFetchError)
-                .then(fetchAndUpdateStatus)
+                .then(async (response) => {
+                    if (response.status === 401) {
+                        localStorage.removeItem("auth");
+                        StatusLabel.cancelAllTimers();
+                        renderLoginUI();
+                        const err = new Error("Unauthorized");
+                        err._handled = true;
+                        throw err;
+                    }
+                    if (!response.ok) {
+                        let detail;
+                        try { detail = (await response.json()).detail; } catch (_) {}
+                        const err = new Error(detail || `HTTP ${response.status}`);
+                        err.detail = detail;
+                        throw err;
+                    }
+                    // 2xx: poll loop in StatusLabel will drive the settle to
+                    // running/stopped once /api/v1/status reflects the change.
+                    return response;
+                })
                 .catch((error) => {
+                    if (error && error._handled) return;
                     console.error("Error toggling server power:", error);
                     StatusLabel.setState("failed", { action });
+                    Toast.show(error.detail || `Failed to ${action} server`, "error");
                 })
                 .finally(() => toggleRefreshSpinner(false));
         });

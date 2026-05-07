@@ -271,8 +271,16 @@ a:hover {
     box-shadow: 0 0 8px rgba(0, 0, 0, 0.5);
     text-align: center;
     min-width: 220px;
-    display: inline-block;
+    max-width: 90vw;
+    display: block;
+    width: max-content;
     transition: background-color 0.3s ease;
+}
+
+#power-button.transitioning {
+    background-color: #C9A227; /* amber, matches .status-transitioning */
+    animation: status-pulse 1.5s ease-in-out infinite;
+    cursor: wait;
 }
 
 #status-label.status-running       { background-color: #82A466; }
