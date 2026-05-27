@@ -43,6 +43,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const STATUS_TRANSITION_POLL_MS = 3000;
     const STATUS_TRANSITION_TIMEOUT_MS = 120000;
     const STATUS_FAILED_HOLD_MS = 15000;
+    const STATUS_BACKOFF_MAX_MS = 30000;
     const StatusLabel = {
         el: null,
         valueEl: null,
@@ -50,6 +51,15 @@ document.addEventListener("DOMContentLoaded", () => {
         recoveryTimer: null,
         pollTimer: null,
         transitionStartedAt: 0,
+        // 429 back-off: while the server is rate-limiting our status polls we
+        // poll more slowly (nextPollAt) and exclude the throttled time from the
+        // transition timeout (throttledMs), so a 429 burst is never misreported
+        // as "Failed to stop/start" — the server may have changed state fine,
+        // we just couldn't ask. See noteRateLimited / clearRateLimit.
+        throttledMs: 0,
+        nextPollAt: 0,
+        pollBackoffMs: 0,
+        rateLimitNotified: false,
         init() {
             this.el = document.getElementById("status-label");
             this.valueEl = document.getElementById("status-value");
@@ -86,6 +96,7 @@ document.addEventListener("DOMContentLoaded", () => {
             if (state === "starting" || state === "stopping") {
                 if (!this.transitionStartedAt) {
                     this.transitionStartedAt = Date.now();
+                    this.throttledMs = 0;
                 }
             } else {
                 this.transitionStartedAt = 0;
@@ -145,19 +156,23 @@ document.addEventListener("DOMContentLoaded", () => {
             this.pollTimer = null;
             if (this.state === "starting" || this.state === "stopping") {
                 this.pollTimer = setInterval(() => {
-                    if (this.transitionStartedAt && Date.now() - this.transitionStartedAt > STATUS_TRANSITION_TIMEOUT_MS) {
+                    // throttledMs excludes time we spent rate-limited, so being
+                    // unable to reach the server doesn't trip the failure timer.
+                    if (this.transitionStartedAt && Date.now() - this.transitionStartedAt - this.throttledMs > STATUS_TRANSITION_TIMEOUT_MS) {
                         const action = this.state === "stopping" ? "stop" : "start";
                         const verb = this.state === "stopping" ? "stop" : "start";
                         Toast.show(`Server did not ${verb} within ${STATUS_TRANSITION_TIMEOUT_MS / 1000}s. Check server logs.`, "error");
                         this.setState("failed", { action });
                         return;
                     }
+                    if (this.nextPollAt && Date.now() < this.nextPollAt) return; // 429 back-off
                     if (typeof fetchAndUpdateStatus === "function") {
                         fetchAndUpdateStatus();
                     }
                 }, STATUS_TRANSITION_POLL_MS);
             } else if (this.state === "running" || this.state === "stopped") {
                 this.pollTimer = setInterval(() => {
+                    if (this.nextPollAt && Date.now() < this.nextPollAt) return; // 429 back-off
                     if (typeof fetchAndUpdateStatus === "function") {
                         fetchAndUpdateStatus();
                     }
@@ -183,12 +198,39 @@ document.addEventListener("DOMContentLoaded", () => {
             clearTimeout(this.recoveryTimer);
             this.recoveryTimer = null;
         },
+        // Called when a status poll comes back 429. Backs off exponentially
+        // (capped) so we stop hammering, pauses the transition failure clock,
+        // and tells the user once per burst.
+        noteRateLimited() {
+            this.pollBackoffMs = this.pollBackoffMs
+                ? Math.min(this.pollBackoffMs * 2, STATUS_BACKOFF_MAX_MS)
+                : STATUS_TRANSITION_POLL_MS;
+            this.nextPollAt = Date.now() + this.pollBackoffMs;
+            if (this.state === "starting" || this.state === "stopping") {
+                this.throttledMs += this.pollBackoffMs;
+            }
+            if (!this.rateLimitNotified) {
+                Toast.show("Status checks are rate-limited; retrying more slowly.", "error");
+                this.rateLimitNotified = true;
+            }
+        },
+        // Called after any successful status poll: clear the back-off so we
+        // return to the normal cadence.
+        clearRateLimit() {
+            this.pollBackoffMs = 0;
+            this.nextPollAt = 0;
+            this.rateLimitNotified = false;
+        },
         cancelAllTimers() {
             clearTimeout(this.recoveryTimer);
             clearInterval(this.pollTimer);
             this.recoveryTimer = null;
             this.pollTimer = null;
             this.transitionStartedAt = 0;
+            this.throttledMs = 0;
+            this.nextPollAt = 0;
+            this.pollBackoffMs = 0;
+            this.rateLimitNotified = false;
         },
     };
 
@@ -304,7 +346,14 @@ document.addEventListener("DOMContentLoaded", () => {
             const response = await fetch("/api/v1/status", {
                 headers: { Authorization: getAuthHeader() },
             });
+            if (response.status === 429) {
+                // Rate-limited: back off, but do NOT treat as a failure — we
+                // simply couldn't read status this tick. The poll loop retries.
+                StatusLabel.noteRateLimited();
+                return;
+            }
             handleFetchError(response);
+            StatusLabel.clearRateLimit();
             const data = await response.json();
             updateUIWithServerStatus(data);
             serverInfo = data;

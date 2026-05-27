@@ -4,11 +4,12 @@ Includes endpoints for uploading files, starting/stopping the DCS server, and mo
 """
 
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from app.auth import get_current_user
 from app.control import DCSControl
 from app.config import Config
+from app.limiter import limiter, STATUS_RATE_LIMIT
 from app.logger import logger
 
 
@@ -74,9 +75,16 @@ async def stop_server(user=Depends(get_current_user)):
     raise HTTPException(status_code=500, detail="Failed to stop DCS server")
 
 @router_api_v1.get("/status", response_model=dict)
-async def server_status(user=Depends(get_current_user)):
+@limiter.limit(STATUS_RATE_LIMIT)
+async def server_status(request: Request, user=Depends(get_current_user)):
     """
     Get the current status of the DCS server and this application.
+
+    Carries its own (high) rate limit instead of the global default: the SPA
+    polls this every 3-15s, so the 100/hour default would 429 it within ~25 min
+    of an open tab and the UI would lose its only signal that the server changed
+    state (e.g. a stop never being detected). `request` is required by
+    slowapi's @limiter.limit to derive the client key.
     """
     status = DCSControl.get_status()
     return {

@@ -7,11 +7,10 @@ from fastapi import FastAPI
 from fastapi.requests import Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.errors import RateLimitExceeded
 from app.config import Config
+from app.limiter import limiter
 from app.routes import router_spa, router_api_v1
 from app.https import cert_file, key_file
 from app.logger import logger
@@ -20,7 +19,6 @@ import asyncio
 import uvicorn
 
 DEBUG_DELAY = 0  # seconds, simulate slow response
-RATE_LIMITE = "100/hour"
 
 # Configs
 host = Config.get("app.host")
@@ -40,11 +38,8 @@ app.include_router(router_api_v1, tags=["API"])
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 app.mount("/partials", StaticFiles(directory="app/templates/partials"), name="partials")
 
-# Set up rate limiting
-limiter = Limiter(
-    key_func=get_remote_address,
-    default_limits=[RATE_LIMITE],
-)
+# Set up rate limiting (limiter is the shared instance from app.limiter, which
+# the per-route decorators in app.routes also use).
 app.state.limiter = limiter
 app.add_exception_handler(
     RateLimitExceeded,
