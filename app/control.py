@@ -14,6 +14,17 @@ from app.config import Config
 from app.logger import logger
 import luadata
 
+
+# Readiness signal. The DCS web admin port (:8088) binds during early init —
+# well before the mission is actually loaded — so an HTTP probe there
+# false-positives during startup. Instead, the Hooks lua script
+# (resources/retribution-control.lua) writes a marker file at
+# `<save_dir>/<READY_FLAG_NAME>` from `onMissionLoadEnd` and removes it on
+# `onSimulationStop`. The Python side checks file existence as the readiness
+# signal. setup_before_start / restore_after_stop also delete the file
+# defensively so a crashed previous run doesn't leave a stale flag behind.
+READY_FLAG_NAME = "ret_remote_ready.flag"
+
 HOOKS_LUA_SOURCE = Path("resources/retribution-control.lua")
 COMMENT_LINES = [
     "sanitizeModule('os')",
@@ -49,6 +60,8 @@ class DCSControl:
         cls.hooks_lua = cls.save_dir / "Scripts" / "Hooks" / HOOKS_LUA_SOURCE.name
         cls.hooks_lua.parent.mkdir(parents=True, exist_ok=True)
 
+        cls.ready_flag = cls.save_dir / READY_FLAG_NAME
+
         cls.dcs_server_exe = Path(Config.get("server.dcs_server_exe"))
         if not cls.dcs_server_exe.exists() or not cls.dcs_server_exe.is_file():
             raise FileNotFoundError(f"DCS_server.exe not found at: {cls.dcs_server_exe}")
@@ -79,11 +92,18 @@ class DCSControl:
     def start_process(cls):
         """
         Start the DCS server process using the executable path from the configuration.
+
+        Returns True only when a NEW DCS server process is spawned and detected.
+        Returns False if a matching process was already running at entry — the
+        route layer should detect that case first and surface a 409, but we keep
+        this defensive check so we never silently spawn a duplicate.
         """
         if cls.find_process():
-            logger.warning("DCS server is already running, cannot start again.")
-            return True
-        
+            logger.warning(
+                "DCS server is already running for this save folder; refusing to spawn duplicate."
+            )
+            return False
+
         cls.setup_before_start()
         
         # Set exporting state.json to current working directory
@@ -133,14 +153,27 @@ class DCSControl:
     @classmethod
     def get_status(cls) -> timedelta:
         """
-        Check if the DCS server process is currently running.
-        If running, return the running time, otherwise return None.
+        Check if the DCS server process is fully ready (process alive AND
+        the mission-load marker has been written by the Hooks lua script).
+        If so, return the running time; else None.
+
+        The marker file is what distinguishes "process spawned" from "DCS has
+        finished loading the mission and players can actually connect". An
+        earlier attempt used an HTTP probe to :8088/encryptedRequest, but the
+        DCS web admin port binds during early init — long before the mission
+        is loaded — so it false-positives.
+
         Returns:
-            timedelta: The running time of the DCS server process.
+            timedelta: The running time of the DCS server process, or None.
         """
-        if cls.find_process():
+        if cls.find_process() and cls._is_ready():
             return timedelta(seconds=int(time.time() - cls.process.create_time()))
         return None
+
+    @classmethod
+    def _is_ready(cls) -> bool:
+        """True iff the Hooks lua script has written the mission-loaded marker."""
+        return cls.ready_flag.exists()
 
     @classmethod
     def save_mission_file(cls, file: bytes, filename: str):
@@ -195,6 +228,12 @@ class DCSControl:
         """
         Setup scripts and server settings before starting the DCS server.
         """
+        # Clear any stale ready flag from a previous run that crashed before
+        # the Hooks lua's onSimulationStop callback could remove it.
+        if cls.ready_flag.exists():
+            cls.ready_flag.unlink()
+            logger.debug("Stale ready flag removed.")
+
         # Copy the hooks lua script to the hooks directory
         write_text_LF(cls.hooks_lua, HOOKS_LUA_SOURCE.read_text(encoding="utf-8"))
         logger.debug(f"Hooks script copied to Scripts/Hooks directory.")
@@ -243,6 +282,12 @@ class DCSControl:
         """
         Restore all files to their original state after the DCS server is stopped.
         """
+        # Delete the ready flag (the Hooks lua's onSimulationStop should have
+        # removed it already, but be defensive in case DCS was killed hard).
+        if cls.ready_flag.exists():
+            cls.ready_flag.unlink()
+            logger.debug("Ready flag removed.")
+
         # Delete the hooks script
         if cls.hooks_lua.exists():
             cls.hooks_lua.unlink()
