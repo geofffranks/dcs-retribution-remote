@@ -43,6 +43,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const STATUS_TRANSITION_POLL_MS = 3000;
     const STATUS_TRANSITION_TIMEOUT_MS = 120000;
     const STATUS_FAILED_HOLD_MS = 15000;
+    const STATUS_BACKOFF_MAX_MS = 60000;
     const StatusLabel = {
         el: null,
         valueEl: null,
@@ -50,6 +51,10 @@ document.addEventListener("DOMContentLoaded", () => {
         recoveryTimer: null,
         pollTimer: null,
         transitionStartedAt: 0,
+        throttledMs: 0,
+        nextPollAt: 0,
+        pollBackoffMs: 0,
+        rateLimitNotified: false,
         init() {
             this.el = document.getElementById("status-label");
             this.valueEl = document.getElementById("status-value");
@@ -145,19 +150,22 @@ document.addEventListener("DOMContentLoaded", () => {
             this.pollTimer = null;
             if (this.state === "starting" || this.state === "stopping") {
                 this.pollTimer = setInterval(() => {
-                    if (this.transitionStartedAt && Date.now() - this.transitionStartedAt > STATUS_TRANSITION_TIMEOUT_MS) {
+                    // Exclude time spent rate-limited from the transition timeout.
+                    if (this.transitionStartedAt && Date.now() - this.transitionStartedAt - this.throttledMs > STATUS_TRANSITION_TIMEOUT_MS) {
                         const action = this.state === "stopping" ? "stop" : "start";
                         const verb = this.state === "stopping" ? "stop" : "start";
                         Toast.show(`Server did not ${verb} within ${STATUS_TRANSITION_TIMEOUT_MS / 1000}s. Check server logs.`, "error");
                         this.setState("failed", { action });
                         return;
                     }
+                    if (this.nextPollAt && Date.now() < this.nextPollAt) return; // 429 back-off
                     if (typeof fetchAndUpdateStatus === "function") {
                         fetchAndUpdateStatus();
                     }
                 }, STATUS_TRANSITION_POLL_MS);
             } else if (this.state === "running" || this.state === "stopped") {
                 this.pollTimer = setInterval(() => {
+                    if (this.nextPollAt && Date.now() < this.nextPollAt) return; // 429 back-off
                     if (typeof fetchAndUpdateStatus === "function") {
                         fetchAndUpdateStatus();
                     }
@@ -183,12 +191,34 @@ document.addEventListener("DOMContentLoaded", () => {
             clearTimeout(this.recoveryTimer);
             this.recoveryTimer = null;
         },
+        noteRateLimited() {
+            this.pollBackoffMs = this.pollBackoffMs
+                ? Math.min(this.pollBackoffMs * 2, STATUS_BACKOFF_MAX_MS)
+                : STATUS_TRANSITION_POLL_MS;
+            this.nextPollAt = Date.now() + this.pollBackoffMs;
+            if (this.state === "starting" || this.state === "stopping") {
+                this.throttledMs += this.pollBackoffMs;
+            }
+            if (!this.rateLimitNotified) {
+                Toast.show("Status checks are rate-limited; retrying more slowly.", "error");
+                this.rateLimitNotified = true;
+            }
+        },
+        clearRateLimit() {
+            this.pollBackoffMs = 0;
+            this.nextPollAt = 0;
+            this.rateLimitNotified = false;
+        },
         cancelAllTimers() {
             clearTimeout(this.recoveryTimer);
             clearInterval(this.pollTimer);
             this.recoveryTimer = null;
             this.pollTimer = null;
             this.transitionStartedAt = 0;
+            this.throttledMs = 0;
+            this.nextPollAt = 0;
+            this.pollBackoffMs = 0;
+            this.rateLimitNotified = false;
         },
     };
 
@@ -304,7 +334,13 @@ document.addEventListener("DOMContentLoaded", () => {
             const response = await fetch("/api/v1/status", {
                 headers: { Authorization: getAuthHeader() },
             });
+            if (response.status === 429) {
+                // A rate-limited poll is not a server-state failure; back off and retry.
+                StatusLabel.noteRateLimited();
+                return;
+            }
             handleFetchError(response);
+            StatusLabel.clearRateLimit();
             const data = await response.json();
             updateUIWithServerStatus(data);
             serverInfo = data;
